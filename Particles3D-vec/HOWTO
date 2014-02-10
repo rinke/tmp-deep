@@ -1,0 +1,8 @@
+Execution on knc1 at JSC
+------------------------
+
+** fma **
+
+$ ssh mic1 "$(pwd)/run.sh fma.mic 2 compact"
+
+run.sh takes <executable> <OMP_NUM_THREADS> <KMP_AFFINITY>

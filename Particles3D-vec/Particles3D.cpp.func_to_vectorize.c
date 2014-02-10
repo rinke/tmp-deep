@@ -2,7 +2,7 @@
 #include <stdlib.h>
 #include <sys/time.h>
 
-#define NUM_PCLS 1843200 // 2048 * 30 * 30
+#define NUM_PCLS (8192 * 8)  // 2048 * 30 * 30
 #define ALIGNMENT 64
 
 #define ALIGNED(X) __assume_aligned(X, ALIGNMENT)
@@ -182,16 +182,40 @@ int main(void)
       Ezl[c][pidx] = 0.0;
     }
   }
-  
-  time1 = time_sec();
-#pragma ivdep
-  for (pidx = 0; pidx < num_pcls; pidx++) {
-    Bxl[0][pidx] = weights[0][pidx] * field_components[0][0][pidx];
-    Byl[0][pidx] = weights[0][pidx] * field_components[0][1][pidx];
-  }
-  time2 = time_sec();
-  printf("time: %f\n", time2 - time1);
 
+
+{
+  double *p1 = Bxl[0];
+  double *p2 = weights[0];
+  double *p3 = field_components[0][0];
+
+#if 0
+  // Warm up cache 
+#pragma vector aligned
+  for (pidx = 0; pidx < num_pcls; pidx++) {
+    //Bxl[0][pidx] = weights[0][pidx] * field_components[0][0][pidx];
+    p1[pidx] = p2[pidx] * p3[pidx];
+  }
+#endif
+
+#pragma omp parallel 
+{}
+
+   time1 = time_sec();
+
+#pragma omp parallel for  
+#pragma vector aligned
+  for (pidx = 0; pidx < num_pcls; pidx++) {
+    //Bxl[0][pidx] = weights[0][pidx] * field_components[0][0][pidx];
+    p1[pidx] = p2[pidx] * p1[pidx];  // Important!!!
+  }
+
+  time2 = time_sec();
+  printf("Time   : %f\n", time2 - time1);
+  printf("GFlops : %f\n", num_pcls / (time2 - time1) / 1e9);
+}
+
+  
 #if 0
   time1 = time_sec();
 
@@ -253,7 +277,7 @@ int main(void)
     Exl[7][pidx] = weights[7][pidx] * field_components[7][3][pidx];
     Eyl[7][pidx] = weights[7][pidx] * field_components[7][4][pidx];
     Ezl[7][pidx] = weights[7][pidx] * field_components[7][5][pidx];
-#if 0
+#if 1
     Bxl[0][pidx] = Bxl[0][pidx] + Bxl[1][pidx] + Bxl[2][pidx] + Bxl[3][pidx] + Bxl[4][pidx] + Bxl[5][pidx] + Bxl[6][pidx] + Bxl[7][pidx];
     Byl[0][pidx] = Byl[0][pidx] + Byl[1][pidx] + Byl[2][pidx] + Byl[3][pidx] + Byl[4][pidx] + Byl[5][pidx] + Byl[6][pidx] + Byl[7][pidx];
     Bzl[0][pidx] = Bzl[0][pidx] + Bzl[1][pidx] + Bzl[2][pidx] + Bzl[3][pidx] + Bzl[4][pidx] + Bzl[5][pidx] + Bzl[6][pidx] + Bzl[7][pidx];
@@ -264,7 +288,7 @@ int main(void)
 #endif
   }
   
-#if 1
+#if 0
   /* Sum B{x,y,z}l[0..7], E{x,y,z}l[0..7] for all pcls */
 #pragma nofusion
   for (pidx = 0; pidx < num_pcls; pidx++) {
