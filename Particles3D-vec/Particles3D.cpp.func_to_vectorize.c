@@ -1,8 +1,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/time.h>
+#include <assert.h>
 
-#define NUM_PCLS (8192 * 8)  // 2048 * 30 * 30
+#define ITERS     100000
+#define NUM_PCLS  2048
 #define ALIGNMENT 64
 
 #define ALIGNED(X) __assume_aligned(X, ALIGNMENT)
@@ -36,7 +38,7 @@ int main(void)
   double *weights[8];
   double *Bxl[8], *Byl[8], *Bzl[8];
   double *Exl[8], *Eyl[8], *Ezl[8];
-  double *field_components[8][6];
+  double *field_components[8];
   
   // Member variables (random values)
   double xstart = 0, ystart = 0, zstart = 0;
@@ -99,9 +101,8 @@ int main(void)
   ALIGNED(Ezl[0]); ALIGNED(Ezl[1]); ALIGNED(Ezl[2]); ALIGNED(Ezl[3]); ALIGNED(Ezl[4]); ALIGNED(Ezl[5]); ALIGNED(Ezl[6]); ALIGNED(Ezl[7]);
   
   for (c = 0; c < 8; c++) {
-    for (j = 0; j < 6; j++) {
-      field_components[c][j] = ptr = _mm_malloc(sizeof(double) * NUM_PCLS, ALIGNMENT);
-      ALIGNED(field_components[c][j]);
+      field_components[c] = ptr = _mm_malloc(sizeof(double) * 6, ALIGNMENT);
+      ALIGNED(field_components[c]);
       if (!ptr) { printf("%d: Malloc failed.\n", __LINE__); exit(1); }
     }
   }
@@ -121,52 +122,11 @@ int main(void)
   }
   for (c = 0; c < 8; c++) {
     for (j = 0; j < 6; j++) {
-      for (pidx = 0; pidx < num_pcls; pidx++)
-      field_components[c][j][pidx] = (double) random();
+      field_components[c][j] = (double) random();
     }
   }
 
                            
-  /* Prepare weights */
-  for (pidx = 0; pidx < num_pcls; pidx++)
-  {
-    abs_pos[0] = _xavg[pidx];
-    abs_pos[1] = _yavg[pidx];
-    abs_pos[2] = _zavg[pidx];
-    // xstart marks start of domain excluding ghosts
-    rel_pos[0] = abs_pos[0] - xstart;
-    rel_pos[1] = abs_pos[1] - ystart;
-    rel_pos[2] = abs_pos[2] - zstart;
-    // cell position minus 1 (due to ghost cells)
-    cm1_pos[0] = rel_pos[0] * inv_dx;
-    cm1_pos[1] = rel_pos[1] * inv_dy;
-    cm1_pos[2] = rel_pos[2] * inv_dz;
-    // index of interface to right of cell 
-    // NOT NEEDED HERE
-    //const int ix = cx + 1;
-    //const int iy = cy + 1;
-    //const int iz = cz + 1;
-    // fraction of the distance from the right of the cell
-    w1[0] = cx - cm1_pos[0];
-    w1[1] = cy - cm1_pos[1];
-    w1[2] = cz - cm1_pos[2];
-    // fraction of distance from the left
-    w0[0] = 1-w1[0];
-    w0[1] = 1-w1[1];
-    w0[2] = 1-w1[2];  
-    weight[0] = w0[0]*w0[1];
-    weight[1] = w0[0]*w1[1];
-    weight[2] = w1[0]*w0[1];
-    weight[3] = w1[0]*w1[1];    
-    weights[0][pidx] = weight[0]*w0[2]; // weight000
-    weights[1][pidx] = weight[0]*w1[2]; // weight001
-    weights[2][pidx] = weight[1]*w0[2]; // weight010
-    weights[3][pidx] = weight[1]*w1[2]; // weight011
-    weights[4][pidx] = weight[2]*w0[2]; // weight100
-    weights[5][pidx] = weight[2]*w1[2]; // weight101
-    weights[6][pidx] = weight[3]*w0[2]; // weight110
-    weights[7][pidx] = weight[3]*w1[2]; // weight111    
-  }
   
   //printf("Weights prepared\n");
   //fflush(stdout);
@@ -189,31 +149,234 @@ int main(void)
   double *p2 = weights[0];
   double *p3 = field_components[0][0];
 
-#if 0
-  // Warm up cache 
-#pragma vector aligned
-  for (pidx = 0; pidx < num_pcls; pidx++) {
-    //Bxl[0][pidx] = weights[0][pidx] * field_components[0][0][pidx];
-    p1[pidx] = p2[pidx] * p3[pidx];
+  // Create threads in advance for timing
+  #pragma omp parallel 
+  {}
+
+  int iters = ITERS;
+  int vec_length = 8;
+  int num_threads = omp_get_max_threads();
+  int num_vecs, rest_num_pcls;
+  int tid_num_pcls[num_threads];
+  int tid_start_pidx[num_threads];
+  int tid_end_pidx[num_threads];
+
+  // Make sure that we run at most 2 threads 
+  // as the calculation is only valid for < 3 threads
+  assert(num_threads < 3);
+
+  time1 = time_sec();
+
+  num_vecs = num_pcls / vec_length;
+  rest_num_pcls = num_pcls % vec_length;
+
+  tid_num_pcls[0] = (num_vecs/2 + num_vecs%2) * vec_length;
+  tid_num_pcls[1] = num_vecs/2 * vec_length + rest_num_pcls;
+
+  tid_start_pidx[0] = 0;
+  tid_start_pidx[1] = tid_num_pcls[0];
+
+  tid_end_pidx[0] = tid_start_pidx[0] + tid_num_pcls[0]-1;
+  tid_end_pidx[1] = tid_start_pidx[1] + tid_num_pcls[1]-1;
+
+  // If only one thread, then it gets all particles
+  if (1 == num_threads) {
+      tid_num_pcls[0] = num_pcls;
+      tid_end_pidx[0] = num_pcls - 1;
   }
+
+  #pragma omp parallel
+  {
+      int tid = omp_get_thread_num();
+      int start_pidx = tid_start_pidx[tid];
+      int end_pidx = tid_end_pidx[tid];
+      int num_pcls = tid_num_pcls[tid];
+      int pidx;
+      // For weights calculation
+      double abs_pos[3];
+      double rel_pos[3];
+      double cm1_pos[3];
+      double w0[3], w1[3], weight[4];
+      double *weights[8];
+      double *weights_0, *weights_1, *weights_2, *weights_3;
+      double *weights_4, *weights_5, *weights_6, *weights_7;
+      // For storing intermediate results
+      double *tmp_ptrs[8];
+      double *tmp_0, *tmp_1, *tmp_2, *tmp_3;
+      double *tmp_4, *tmp_5, *tmp_6, *tmp_7;
+
+      printf("tid %d: pcls: [ %d , %d ] total: %d)\n", tid, start_pidx, end_pidx, num_pcls);
+
+      // Weights for my particles for their 8 components
+      for (i = 0; i < 8; i++)
+      {
+          weights[i] = ptr =_mm_malloc(sizeof(double) * num_pcls, ALIGNMENT);
+          if (!ptr) { printf("%d: Malloc failed.\n", __LINE__); exit(1); }
+      }
+      weights_0 = weights[0]; ALIGNED(weights_0);
+      weights_1 = weights[1]; ALIGNED(weights_1);
+      weights_2 = weights[2]; ALIGNED(weights_2);
+      weights_3 = weights[3]; ALIGNED(weights_3);
+      weights_4 = weights[4]; ALIGNED(weights_4);
+      weights_5 = weights[5]; ALIGNED(weights_5);
+      weights_6 = weights[6]; ALIGNED(weights_6);
+      weights_7 = weights[7]; ALIGNED(weights_7);
+
+      // Arrays for BxyzExyzl
+      Bxl = ptr = _mm_malloc(sizeof(double) * num_pcls, ALIGNMENT);
+      if (!ptr) { printf("%d: Malloc failed.\n", __LINE__); exit(1); }
+      Byl = ptr = _mm_malloc(sizeof(double) * num_pcls, ALIGNMENT);
+      if (!ptr) { printf("%d: Malloc failed.\n", __LINE__); exit(1); }
+      Bzl = ptr = _mm_malloc(sizeof(double) * num_pcls, ALIGNMENT);
+      if (!ptr) { printf("%d: Malloc failed.\n", __LINE__); exit(1); }
+      Exl = ptr = _mm_malloc(sizeof(double) * num_pcls, ALIGNMENT);
+      if (!ptr) { printf("%d: Malloc failed.\n", __LINE__); exit(1); }
+      Eyl = ptr = _mm_malloc(sizeof(double) * num_pcls, ALIGNMENT);
+      if (!ptr) { printf("%d: Malloc failed.\n", __LINE__); exit(1); }
+      Ezl = ptr = _mm_malloc(sizeof(double) * num_pcls, ALIGNMENT);
+      if (!ptr) { printf("%d: Malloc failed.\n", __LINE__); exit(1); }
+      ALIGNED(Bxl); ALIGNED(Byl); ALIGNED(Bzl); 
+      ALIGNED(Exl); ALIGNED(Eyl); ALIGNED(Ezl); 
+  
+      field_components_0 = field_components[0]; ALIGNED(field_components_0);
+      field_components_1 = field_components[1]; ALIGNED(field_components_1);
+      field_components_2 = field_components[2]; ALIGNED(field_components_2);
+      field_components_3 = field_components[3]; ALIGNED(field_components_3);
+      field_components_4 = field_components[4]; ALIGNED(field_components_4);
+      field_components_5 = field_components[5]; ALIGNED(field_components_5);
+      field_components_6 = field_components[6]; ALIGNED(field_components_6);
+      field_components_7 = field_components[7]; ALIGNED(field_components_7);
+
+
+      /* Compute weights for field components */
+      for (i = 0, pidx = start_pidx; i < num_pcls; i++, pidx++)
+      {
+          abs_pos[0] = _xavg[pidx];
+          abs_pos[1] = _yavg[pidx];
+          abs_pos[2] = _zavg[pidx];
+          // xstart marks start of domain excluding ghosts
+          rel_pos[0] = abs_pos[0] - xstart;
+          rel_pos[1] = abs_pos[1] - ystart;
+          rel_pos[2] = abs_pos[2] - zstart;
+          // cell position minus 1 (due to ghost cells)
+          cm1_pos[0] = rel_pos[0] * inv_dx;
+          cm1_pos[1] = rel_pos[1] * inv_dy;
+          cm1_pos[2] = rel_pos[2] * inv_dz;
+          // index of interface to right of cell 
+          // NOT NEEDED HERE
+          //const int ix = cx + 1;
+          //const int iy = cy + 1;
+          //const int iz = cz + 1;
+          // fraction of the distance from the right of the cell
+          w1[0] = cx - cm1_pos[0];
+          w1[1] = cy - cm1_pos[1];
+          w1[2] = cz - cm1_pos[2];
+          // fraction of distance from the left
+          w0[0] = 1-w1[0];
+          w0[1] = 1-w1[1];
+          w0[2] = 1-w1[2];  
+          weight[0] = w0[0]*w0[1];
+          weight[1] = w0[0]*w1[1];
+          weight[2] = w1[0]*w0[1];
+          weight[3] = w1[0]*w1[1];    
+          weights_0[i] = weight[0]*w0[2]; // weight000
+          weights_1[i] = weight[0]*w1[2]; // weight001
+          weights_2[i] = weight[1]*w0[2]; // weight010
+          weights_3[i] = weight[1]*w1[2]; // weight011
+          weights_4[i] = weight[2]*w0[2]; // weight100
+          weights_5[i] = weight[2]*w1[2]; // weight101
+          weights_6[i] = weight[3]*w0[2]; // weight110
+          weights_7[i] = weight[3]*w1[2]; // weight111    
+      }
+
+      // For Bxyz Exyz
+      for (i = 0; i < 6; i++) {
+          // For all particles
+          for (j = 0; j < num_pcls; j++)
+          {
+
+//TODO: Change to use Bx By Bz ... with ptr[.]
+
+              // For all 8 components of one particle
+              BxyzExyz_l[j] = 0.0;
+              BxyzExyz_l[j] += weights_0[j] * field_components_0[i];
+              BxyzExyz_l[j] += weights_1[j] * field_components_1[i];
+              BxyzExyz_l[j] += weights_2[j] * field_components_2[i];
+              BxyzExyz_l[j] += weights_3[j] * field_components_3[i];
+              BxyzExyz_l[j] += weights_4[j] * field_components_4[i];
+              BxyzExyz_l[j] += weights_5[j] * field_components_5[i];
+              BxyzExyz_l[j] += weights_6[j] * field_components_6[i];
+              BxyzExyz_l[j] += weights_7[j] * field_components_7[i];
+          }
+      }
+
+      /* Do what is left */
+      for (pidx = 0; pidx < num_pcls; pidx++) {
+          Om[0] = qdto2mc * Bxl[0][pidx];
+          Om[1] = qdto2mc * Byl[0][pidx];
+          Om[2] = qdto2mc * Bzl[0][pidx];
+
+          // end interpolation
+          omsq = (Om[0] * Om[0] + Om[1] * Om[1] + Om[2] * Om[2]);
+          denom = 1.0 / (1.0 + omsq);    
+
+          // solve the position equation
+          t[0] = u[pidx] + qdto2mc * Exl[0][pidx];
+          t[1] = v[pidx] + qdto2mc * Eyl[0][pidx];
+          t[2] = w[pidx] + qdto2mc * Ezl[0][pidx];
+          //const pfloat udotb = ut * Bxl + vt * Byl + wt * Bzl;
+          udotOm = t[0] * Om[0] + t[1] * Om[1] + t[2] * Om[2];
+
+          // solve the velocity equation
+          avg[0] = (t[0] + (t[1] * Om[2] - t[2] * Om[1] + udotOm * Om[0])) * denom;
+          avg[1] = (t[1] + (t[2] * Om[0] - t[0] * Om[2] + udotOm * Om[1])) * denom;
+          avg[2] = (t[2] + (t[0] * Om[1] - t[1] * Om[0] + udotOm * Om[2])) * denom;
+
+          // update average position
+          _xavg[pidx] = x[pidx] + avg[0] * dto2;
+          _yavg[pidx] = y[pidx] + avg[1] * dto2;
+          _zavg[pidx] = z[pidx] + avg[2] * dto2;
+
+          /*
+           * Need outer loop to do this here.
+           * So we skip it.
+           */
+#if 0
+          // if it is the last iteration, update the position and velocity
+          // (hopefully this will not compromise vectorization...)
+          if(niter==NiterMover)
+          {
+              x[pidx] = xorig + uavg * dt;
+              y[pidx] = yorig + vavg * dt;
+              z[pidx] = zorig + wavg * dt;
+              u[pidx] = 2.0 * uavg - uorig;
+              v[pidx] = 2.0 * vavg - vorig;
+              w[pidx] = 2.0 * wavg - worig;
+          }
 #endif
+      }
 
-#pragma omp parallel 
-{}
+      
 
-   time1 = time_sec();
+  }
+}
 
-#pragma omp parallel for  
-#pragma vector aligned
-  for (pidx = 0; pidx < num_pcls; pidx++) {
-    //Bxl[0][pidx] = weights[0][pidx] * field_components[0][0][pidx];
-    p1[pidx] = p2[pidx] * p1[pidx];  // Important!!!
+#if 0
+#pragma omp parallel for
+  for (i = 0; i < iters; i++) {
+#pragma vector aligned (p1, p2, p3)
+//#pragma vector nontemporal (p1)
+      for (pidx = 0; pidx < num_pcls; pidx++) {
+          //Bxl[0][pidx] = weights[0][pidx] * field_components[0][0][pidx];
+          p1[pidx] = p2[pidx] * p3[pidx];  // Important!!!
+      }
   }
 
   time2 = time_sec();
   printf("Time   : %f\n", time2 - time1);
-  printf("GFlops : %f\n", num_pcls / (time2 - time1) / 1e9);
+  printf("GFlops : %f\n", (iters * num_pcls) / (time2 - time1) / 1e9);
 }
+#endif
 
   
 #if 0
@@ -304,7 +467,6 @@ int main(void)
 
   time2 = time_sec();
   printf("time: %f\n", time2 - time1);
-#endif
 
   /* Do what is left */
   for (pidx = 0; pidx < num_pcls; pidx++) {
@@ -351,7 +513,10 @@ int main(void)
     }
 #endif
   }
+#endif
   
+    // Do this later
+#if 0
   /* Free */
   _mm_free(x);
   _mm_free(y);
@@ -374,10 +539,10 @@ int main(void)
   }
 
   for (c = 0; c < 8; c++) {
-    for (j = 0; j < 6; j++) {
-      _mm_free(field_components[c][j]);
+      _mm_free(field_components[c]);
     }
   }
+#endif
 
   printf("Finished successfully.\n");
   fflush(stdout);
