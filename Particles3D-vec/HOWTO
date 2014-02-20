@@ -6,3 +6,7 @@ Execution on knc1 at JSC
 $ ssh mic1 "$(pwd)/run.sh fma.mic 2 compact"
 
 run.sh takes <executable> <OMP_NUM_THREADS> <KMP_AFFINITY>
+
+** Particle Mover **
+
+$ ssh mic1 "$(pwd)/run.sh Particles3D.cpp.func_to_vectorize.mic 2 compact,granularity=fine" 

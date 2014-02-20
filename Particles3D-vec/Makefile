@@ -1,6 +1,7 @@
 BIN = Particles3D.cpp.func_to_vectorize
 FMA = fma
-CPPFLAGS = -vec-report2 -openmp
+CPPFLAGS = -vec-report2 -openmp -restrict
+DEBUG = -g -debug -Wl,-rpath,/opt/intel/composer_xe_2013_sp1.1.106/compiler/lib/mic/
 
 all: 
 	icc $(CPPFLAGS) -O3 -mmic -o $(FMA).mic $(FMA).c 
@@ -10,5 +11,14 @@ all:
 	icc $(CPPFLAGS) -O3 -xhost -o $(BIN).cpu $(BIN).c 
 	icc $(CPPFLAGS) -O3 -xhost -no-vec -o $(BIN).novec.cpu $(BIN).c 
 
+debug:
+	icc $(CPPFLAGS) $(DEBUG) -O3 -mmic -o $(FMA).dbg.mic $(FMA).c 
+	icc $(CPPFLAGS) $(DEBUG) -O3 -mmic -no-vec -o $(FMA).novec.dbg.mic $(FMA).c 
+	icc $(CPPFLAGS) $(DEBUG) -O3 -mmic -o $(BIN).dbg.mic $(BIN).c 
+	icc $(CPPFLAGS) $(DEBUG) -O3 -mmic -no-vec -o $(BIN).novec.dbg.mic $(BIN).c 
+	icc $(CPPFLAGS) $(DEBUG) -O3 -xhost -o $(BIN).dbg.cpu $(BIN).c 
+	icc $(CPPFLAGS) $(DEBUG) -O3 -xhost -no-vec -o $(BIN).novec.dbg.cpu $(BIN).c 
+
+
 clean:
-	rm -rf $(BIN){*.mic,*.cpu} $(FMA){*.mic,*.cpu}
+	rm -rf $(BIN){*.mic,*.cpu,*.s} $(FMA){*.mic,*.cpu,*.s}
