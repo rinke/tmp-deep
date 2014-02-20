@@ -5,7 +5,7 @@
 
 #define CACHE_SIZE (10*1024*1024) // 1 MB
 #define ITERS      100000
-#define NUM_PCLS   2048 
+#define NUM_PCLS   2048
 #define ALIGNMENT  64
 #define BLOCKSIZE  32
 
@@ -100,6 +100,7 @@ int main(void)
   }
 
   //move_bucket_old();
+  //move_bucket_new();
   move_bucket_new_blocked();
   /*
   flush_cache();
@@ -128,7 +129,6 @@ int main(void)
 void move_bucket_new_blocked()
 {
     int iters = ITERS;
-    int blocksize = BLOCKSIZE; // number particles per block
     int vec_length = 8;
     int num_threads = omp_get_max_threads();
     int num_vecs, rest_num_pcls;
@@ -174,7 +174,7 @@ void move_bucket_new_blocked()
         int start_pidx = tid_start_pidx[tid];
         int end_pidx = tid_end_pidx[tid];
         int num_pcls = tid_num_pcls[tid];
-        int num_blocks, block, block_pidx;
+        int num_blocks, block_disp, block_pidx;
         int i, j, pidx;
         // For weights calculation
         double abs_pos[3];
@@ -235,9 +235,9 @@ void move_bucket_new_blocked()
         //time[1] = time_sec();
 
         // For all blocks
-        for (block = 0; block < num_blocks; block++)
+        for (block_disp = 0; block_disp < num_pcls; block_disp += BLOCKSIZE)
         {
-            block_pidx = start_pidx + block * BLOCKSIZE;
+            block_pidx = start_pidx + block_disp;
             //printf("tid %d: block_pidx: %d\n", tid, block_pidx);
             
             /* Compute weights for field components */
@@ -292,7 +292,7 @@ void move_bucket_new_blocked()
 
                 // For all particles in block
                 #pragma ivdep
-                #pragma noprefetch
+                //#pragma noprefetch
                 for (j = 0; j < BLOCKSIZE; j++)
                 {
                     // For all 8 components of one particle
