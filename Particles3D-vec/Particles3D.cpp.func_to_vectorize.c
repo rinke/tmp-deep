@@ -4,9 +4,9 @@
 #include <assert.h>
 
 #define CACHE_SIZE                (10*1024*1024) // To flush cache between benchmarks 
-#define NUM_MESH_CELLS            (30*30)
+#define NUM_MESH_CELLS            (30*30) //(30*30)
 #define NUM_PCLS_PER_MESH_CELL    1024
-#define NUM_THREADS_PER_MESH_CELL 2
+#define NUM_THREADS_PER_MESH_CELL 1
 #define ALIGNMENT                 64
 #define BLOCKSIZE                 32 // For performance: Must be multiple of VEC_LENGTH
 #define VEC_LENGTH                8
@@ -75,8 +75,8 @@ int main(void)
     int pidx, i, j;
     double *ptr;
 
-    /* Assert that number pcls per cell is multiple of blocksize */
-    /* NOTE: Already considered as we allocate multiple of BLOCKSIZE memory
+    /* Assert that number pcls per cell is multiple of blocksize            */
+    /* NOTE: Already considered as we allocate multiple of BLOCKSIZE memory */
     //assert(NUM_PCLS_PER_MESH_CELL % BLOCKSIZE == 0);
 
 

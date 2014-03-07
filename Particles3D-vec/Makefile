@@ -11,6 +11,12 @@ all:
 	icc $(CPPFLAGS) -O3 -xhost -o $(BIN).cpu $(BIN).c 
 	icc $(CPPFLAGS) -O3 -xhost -no-vec -o $(BIN).novec.cpu $(BIN).c 
 
+mpi:
+	mpicc -cc=icc $(CPPFLAGS) -O3 -mmic -o $(BIN).mpi.mic $(BIN).mpi.c
+	mpicc -cc=icc $(CPPFLAGS) -O3 -mmic -no-vec -o $(BIN).novec.mpi.mic $(BIN).mpi.c
+	mpicc -cc=icc $(CPPFLAGS) -O3 -xhost -o $(BIN).mpi.cpu $(BIN).mpi.c
+	mpicc -cc=icc $(CPPFLAGS) -O3 -xhost -no-vec -o $(BIN).novec.mpi.cpu $(BIN).mpi.c
+
 debug:
 	icc $(CPPFLAGS) $(DEBUG) -O3 -mmic -o $(FMA).dbg.mic $(FMA).c 
 	icc $(CPPFLAGS) $(DEBUG) -O3 -mmic -no-vec -o $(FMA).novec.dbg.mic $(FMA).c 
