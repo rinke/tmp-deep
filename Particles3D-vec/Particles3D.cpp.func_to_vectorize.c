@@ -167,9 +167,9 @@ int main(void)
     }
 
 
-    //move_bucket_old();
+    move_bucket_old();
     //move_bucket_new();
-    move_bucket_new_blocked();
+    //move_bucket_new_blocked();
     /*
     flush_cache();
     flush_cache();
