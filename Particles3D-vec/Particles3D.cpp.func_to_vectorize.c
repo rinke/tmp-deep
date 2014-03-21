@@ -4,7 +4,10 @@
 #include <assert.h>
 
 #define CACHE_SIZE                (10*1024*1024) // To flush cache between benchmarks 
-#define NUM_MESH_CELLS            (30*30) //(30*30)
+#define NXC                       20
+#define NYC                       15
+#define NZC                       3
+#define NUM_MESH_CELLS            (NXC*NYZ*NZC) //(20*15*3)
 #define NUM_PCLS_PER_MESH_CELL    1024
 #define NUM_THREADS_PER_MESH_CELL 1
 #define ALIGNMENT                 64
@@ -20,6 +23,7 @@
 typedef struct mesh_cell
 {
     int num_pcls;
+    __attribute__ ((align(64))) int cell_id_xyz[3];
     /*
      * Lengths need to be multiple of BLOCKSIZE, 
      * i.e., add padding if necessary
@@ -37,6 +41,8 @@ typedef struct mesh_cell
     __attribute__ ((align(64))) double field_component_5[6];
     __attribute__ ((align(64))) double field_component_6[6];
     __attribute__ ((align(64))) double field_component_7[6];
+    int *exit_cells;
+    double *exit_pcls;
 } Mesh_cell;
 
 inline double time_sec();
@@ -45,7 +51,7 @@ void move_bucket_old();
 void move_bucket_new();
 void move_bucket_new_blocked();
 void move_bucket_new_blocked_sort();
-inline unsigned int calc_cell_idx(double x, double y, double z);
+inline int calc_cell_idx(double x, double y, double z);
 
 /* 
  * Global variables
@@ -57,7 +63,8 @@ Mesh_cell *mesh_cells;
 // Array to flush caches
 char volatile *cache;
 
-// Member variables (random values)
+// Member variables (partly random values)
+int nxc = NXC, nyc = NYC, nzc = NZC;
 double xstart = 0, ystart = 0, zstart = 0;
 double inv_dx = .25, inv_dy = .25, inv_dz = .25;
 double dto2 = .4;
@@ -74,9 +81,10 @@ double *field_components[8];
 
 int main(void)
 {
-    double *q, *x, *y, *z, *u, *v, *w, *_xavg, *_yavg, *_zavg;
+    double *q, *x, *y, *z, *u, *v, *w, *_xavg, *_yavg, *_zavg, *exit_pcls;
     long long *ParticleID;
-    int num_blocks;
+    int *exit_cells;
+    int size, num_blocks;
     int pidx, i, j;
     void *ptr;
 
@@ -96,89 +104,106 @@ int main(void)
     /*
      * Fill mesh cells
      */
-    for (i = 0; i < NUM_MESH_CELLS; i++)
-    {
-        int size; 
+    for (cid_x = 0; cid_x < nxc; cid_x++) {
+        for (cid_y = 0; cid_y < nyc; cid_y++) {
+            for (cid_z = 0; cid_z < nzc; cid_z++) {
 
-        num_pcls = NUM_PCLS_PER_MESH_CELL;
-        /* 
-         * Make sure that size of memory allocated 
-         * is multiple of BLOCKSIZE particles
-         */
-        num_blocks = (num_pcls-1) / BLOCKSIZE + 1;
-        size = num_blocks * BLOCKSIZE * sizeof(double);
+                i = cell_xyz_to_idx(cidx_x, cidx_y, cidx_z); 
 
-        /* Particles */
-        ParticleID = ptr = _mm_malloc(num_blocks * BLOCKSIZE * sizeof(long long), ALIGNMENT);
-        assert(ptr);
-        q = ptr = _mm_malloc(size, ALIGNMENT);
-        assert(ptr);
-        x = ptr = _mm_malloc(size, ALIGNMENT);
-        assert(ptr);
-        y = ptr = _mm_malloc(size, ALIGNMENT);
-        assert(ptr);
-        z = ptr = _mm_malloc(size, ALIGNMENT);
-        assert(ptr);
-        u = ptr = _mm_malloc(size, ALIGNMENT);
-        assert(ptr);
-        v = ptr = _mm_malloc(size, ALIGNMENT);
-        assert(ptr);
-        w = ptr = _mm_malloc(size, ALIGNMENT);
-        assert(ptr);
-        _xavg = ptr = _mm_malloc(size, ALIGNMENT);
-        assert(ptr);
-        _yavg = ptr = _mm_malloc(size, ALIGNMENT);
-        assert(ptr);
-        _zavg = ptr = _mm_malloc(size, ALIGNMENT);
-        assert(ptr);
+                num_pcls = NUM_PCLS_PER_MESH_CELL;
+                /* 
+                 * Make sure that size of memory allocated 
+                 * is multiple of BLOCKSIZE particles
+                 */
+                num_blocks = (num_pcls-1) / BLOCKSIZE + 1;
+                size = num_blocks * BLOCKSIZE * sizeof(double);
 
-        /* Init particles */
-        for (pidx = 0; pidx < num_pcls; pidx++)
-        {
-            ParticleID[pidx] = (long long) random();
-            q[pidx] = (double) random();
-            x[pidx] = (double) random();
-            y[pidx] = (double) random();
-            z[pidx] = (double) random();
-            u[pidx] = (double) random();
-            v[pidx] = (double) random();
-            w[pidx] = (double) random();
-            _xavg[pidx] = (double) random();
-            _yavg[pidx] = (double) random();
-            _zavg[pidx] = (double) random();
+                /* Particles */
+                ParticleID = ptr = _mm_malloc(num_blocks * BLOCKSIZE * sizeof(long long), ALIGNMENT);
+                assert(ptr);
+                q = ptr = _mm_malloc(size, ALIGNMENT);
+                assert(ptr);
+                x = ptr = _mm_malloc(size, ALIGNMENT);
+                assert(ptr);
+                y = ptr = _mm_malloc(size, ALIGNMENT);
+                assert(ptr);
+                z = ptr = _mm_malloc(size, ALIGNMENT);
+                assert(ptr);
+                u = ptr = _mm_malloc(size, ALIGNMENT);
+                assert(ptr);
+                v = ptr = _mm_malloc(size, ALIGNMENT);
+                assert(ptr);
+                w = ptr = _mm_malloc(size, ALIGNMENT);
+                assert(ptr);
+                _xavg = ptr = _mm_malloc(size, ALIGNMENT);
+                assert(ptr);
+                _yavg = ptr = _mm_malloc(size, ALIGNMENT);
+                assert(ptr);
+                _zavg = ptr = _mm_malloc(size, ALIGNMENT);
+                assert(ptr);
+                exit_cells = ptr = _mm_malloc(num_blocks * BLOCKSIZE * sizeof(int), ALIGNMENT);
+                assert(ptr);
+                exit_pcls = ptr = _mm_malloc(size, ALIGNMENT);
+                assert(ptr);
+
+                /* Init cell's x, y, z coordinates (local to subdomain) */
+                mesh_cells[i].cell_id_xyz[0] = cid_x;
+                mesh_cells[i].cell_id_xyz[1] = cid_y;
+                mesh_cells[i].cell_id_xyz[2] = cid_z;
+
+                /* Init particles */
+                for (pidx = 0; pidx < num_pcls; pidx++)
+                {
+                    ParticleID[pidx] = (long long) random();
+                    q[pidx] = (double) random();
+                    x[pidx] = (double) random();
+                    y[pidx] = (double) random();
+                    z[pidx] = (double) random();
+                    u[pidx] = (double) random();
+                    v[pidx] = (double) random();
+                    w[pidx] = (double) random();
+                    _xavg[pidx] = (double) random();
+                    _yavg[pidx] = (double) random();
+                    _zavg[pidx] = (double) random();
+                }
+                /* Init fields */
+                for (j = 0; j < 6; j++) {
+                    mesh_cells[i].field_component_0[j] = (double) random();
+                    mesh_cells[i].field_component_1[j] = (double) random();
+                    mesh_cells[i].field_component_2[j] = (double) random();
+                    mesh_cells[i].field_component_3[j] = (double) random();
+                    mesh_cells[i].field_component_4[j] = (double) random();
+                    mesh_cells[i].field_component_5[j] = (double) random();
+                    mesh_cells[i].field_component_6[j] = (double) random();
+                    mesh_cells[i].field_component_7[j] = (double) random();
+                }
+
+                mesh_cells[i].num_pcls   = num_pcls;
+                mesh_cells[i].ParticleID = ParticleID;
+                mesh_cells[i].q          = q;
+                mesh_cells[i].x          = x;
+                mesh_cells[i].y          = y;
+                mesh_cells[i].z          = z;
+                mesh_cells[i].u          = u;
+                mesh_cells[i].v          = v;
+                mesh_cells[i].w          = w;
+                mesh_cells[i]._xavg      = _xavg;
+                mesh_cells[i]._yavg      = _yavg;
+                mesh_cells[i]._zavg      = _zavg;
+                mesh_cells[i].exit_cells = exit_cells;
+                mesh_cells[i].exit_pcls  = exit_pcls;
+
+                ALIGNED(mesh_cells[i].ParticleID);
+                ALIGNED(mesh_cells[i].q);
+                ALIGNED(mesh_cells[i].x); ALIGNED(mesh_cells[i].y); ALIGNED(mesh_cells[i].z);
+                ALIGNED(mesh_cells[i].u); ALIGNED(mesh_cells[i].v); ALIGNED(mesh_cells[i].w);
+                ALIGNED(mesh_cells[i]._xavg); 
+                ALIGNED(mesh_cells[i]._yavg); 
+                ALIGNED(mesh_cells[i]._zavg);
+                ALIGNED(mesh_cells[i].exit_cells);
+                ALIGNED(mesh_cells[i].exit_pcls);
+            }
         }
-        /* Init fields */
-        for (j = 0; j < 6; j++) {
-            mesh_cells[i].field_component_0[j] = (double) random();
-            mesh_cells[i].field_component_1[j] = (double) random();
-            mesh_cells[i].field_component_2[j] = (double) random();
-            mesh_cells[i].field_component_3[j] = (double) random();
-            mesh_cells[i].field_component_4[j] = (double) random();
-            mesh_cells[i].field_component_5[j] = (double) random();
-            mesh_cells[i].field_component_6[j] = (double) random();
-            mesh_cells[i].field_component_7[j] = (double) random();
-        }
-
-        mesh_cells[i].num_pcls = num_pcls;
-        mesh_cells[i].ParticleID = ParticleID;
-        mesh_cells[i].q        = q;
-        mesh_cells[i].x        = x;
-        mesh_cells[i].y        = y;
-        mesh_cells[i].z        = z;
-        mesh_cells[i].u        = u;
-        mesh_cells[i].v        = v;
-        mesh_cells[i].w        = w;
-        mesh_cells[i]._xavg    = _xavg;
-        mesh_cells[i]._yavg    = _yavg;
-        mesh_cells[i]._zavg    = _zavg;
-
-        ALIGNED(mesh_cells[i].ParticleID);
-        ALIGNED(mesh_cells[i].q);
-        ALIGNED(mesh_cells[i].x); ALIGNED(mesh_cells[i].y); ALIGNED(mesh_cells[i].z);
-        ALIGNED(mesh_cells[i].u); ALIGNED(mesh_cells[i].v); ALIGNED(mesh_cells[i].w);
-        ALIGNED(mesh_cells[i]._xavg); 
-        ALIGNED(mesh_cells[i]._yavg); 
-        ALIGNED(mesh_cells[i]._zavg);
     }
 
 
@@ -237,6 +262,9 @@ void move_bucket_new_blocked_sort()
         double *restrict x, *restrict y, *restrict z;
         double *restrict u, *restrict v, *restrict w;
         double *restrict _xavg, *restrict _yavg, *restrict _zavg;
+        int *restrict exit_cells;
+        double *restrict exit_pcls;
+        int *restrict cell_id_xyz;
         // For weights calculation
         double abs_pos[3];
         double rel_pos[3];
@@ -263,11 +291,15 @@ void move_bucket_new_blocked_sort()
         __attribute__ ((align(64))) double Exl[BLOCKSIZE];
         __attribute__ ((align(64))) double Eyl[BLOCKSIZE];
         __attribute__ ((align(64))) double Ezl[BLOCKSIZE];
-        // For what is left
+        // For pushing
         double qdto2mc;
         double omsq, denom;
         double t[3], Om[3], avg[3];
         double udotOm;
+        // For sorting
+        int new_pcidx[BLOCKSIZE];
+        int exit_cells_idx, exit_pcls_idx;
+        int gap_idx;
         // Timing
         double time[6];
 
@@ -286,11 +318,14 @@ void move_bucket_new_blocked_sort()
         BxyzExyz_l[5] = Ezl;
 
         /* 1 thread works on one cell */
-        #pragma omp for schedule(static,1) nowait
+        #pragma omp for schedule(static,1)
         for (i = 0; i < NUM_MESH_CELLS; i++)
         {
             //printf("i: %d\n", i); fflush(stdout);
-            cidx = i; // Cell index
+            cidx = i;            // Cell index
+            exit_cells_idx = 1;  // 1st idx where to start filling exit_cells[]
+            exit_pcls_idx  = 0;  // 1st idx where to start filling exit_pcls[]
+            gap_idx        = 0;  // 1st idx where gap in pcl arrays has to be filled
 
             /* Set shortcuts to mesh cell's data */
             ParticleID = mesh_cells[cidx].ParticleID; ALIGNED(ParticleID);
@@ -304,6 +339,9 @@ void move_bucket_new_blocked_sort()
             _xavg = mesh_cells[cidx]._xavg; ALIGNED(_xavg);
             _yavg = mesh_cells[cidx]._yavg; ALIGNED(_yavg);
             _zavg = mesh_cells[cidx]._zavg; ALIGNED(_zavg);
+            exit_cells  = mesh_cells[cidx].exit_cells; ALIGNED(exit_cells);
+            exit_pcls   = mesh_cells[cidx].exit_pcls; ALIGNED(exit_pcls);
+            cell_id_xyz = mesh_cells[cidx].cell_id_xyz; ALIGNED(cell_id_xyz); 
 
             /* Field components for this cell */
             field_component_0 = mesh_cells[cidx].field_component_0; ALIGNED(field_component_0);
@@ -359,9 +397,9 @@ void move_bucket_new_blocked_sort()
                     //const int iy = cy + 1;
                     //const int iz = cz + 1;
                     // fraction of the distance from the right of the cell
-                    w1[0] = cx - cm1_pos[0];
-                    w1[1] = cy - cm1_pos[1];
-                    w1[2] = cz - cm1_pos[2];
+                    w1[0] = cell_id_xyz[0] - cm1_pos[0];
+                    w1[1] = cell_id_xyz[1] - cm1_pos[1];
+                    w1[2] = cell_id_xyz[2] - cm1_pos[2];
                     // fraction of distance from the left
                     w0[0] = 1-w1[0];
                     w0[1] = 1-w1[1];
@@ -411,7 +449,7 @@ void move_bucket_new_blocked_sort()
                 //time[3] = time_sec();
 #if 1
 
-                /* Do what is left */
+                /* Push particles */
                 //#pragma vector nontemporal (_xavg,_yavg,_zavg)
                 for (j = 0, pidx = cpidx; j < BLOCKSIZE; j++, pidx++) {
                     Om[0] = qdto2mc * Bxl[j];
@@ -515,13 +553,14 @@ void move_bucket_new_blocked_sort()
                         exit_cells_idx++;    // Point to next empty slot for cell idx
                     }
 
-
-                   - Init gap idx to 0 (location of 1st pcl), increment with next pcl if required
-                   (- Pcls must be sorted before we enter pusher)
-                   - calc cell idx (integer value)          XXX
-                   - gather pcl data into leave array       XXX
-                   - close gaps in array of pcls that stay  XXX
-                   - Store exit counter in exit_cells[]     XXX
+                    /*
+                       - Init gap idx to 0 (location of 1st pcl), increment with next pcl if required XXX
+                      (- Pcls must be sorted before we enter pusher)
+                       - calc cell idx (integer value)          XXX
+                       - gather pcl data into leave array       XXX
+                       - close gaps in array of pcls that stay  XXX
+                       - Store exit counter in exit_cells[]     XXX
+                     */
                 }
 
 #endif
@@ -538,7 +577,10 @@ void move_bucket_new_blocked_sort()
 #endif
         }
         /* Every cell collects its incoming particles */
-        - Update num_pcls in mesh_cell
+        /*
+         * TODO
+          - Update num_pcls in mesh_cell
+         */
     }
     time[1] = time_sec();
     printf("move_bucket_new_blocked_sort: total: %f\n", time[1] - time[0]);
@@ -1240,7 +1282,7 @@ void flush_cache()
         cache[i] = (cache[i] + i) % 256;
 }
 
-inline unsigned int calc_cell_idx(double xpos, double ypos, double zpos)
+inline int calc_cell_idx(double xpos, double ypos, double zpos)
 {
     int cx, cy, cz;
 
@@ -1263,7 +1305,7 @@ inline unsigned int calc_cell_idx(double xpos, double ypos, double zpos)
     cz = (cz >= nzc) ? nzc-1 : cz;
 
     // cx * nyc * nzc + cy * nzc + cz
-    return (unsigned int) ((cx * nyc + cy) * nzc + cz); 
+    return (cx * nyc + cy) * nzc + cz; 
 }
 
 
